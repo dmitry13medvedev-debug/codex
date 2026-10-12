@@ -1,0 +1,180 @@
+name: Build Lad Android APK
+on:
+  push:
+    branches: [lad-android-build]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone Flow
+        run: |
+          git clone https://github.com/flow-mn/flow.git flow
+          git -C flow checkout --detach faeab54a0eb04a85ed0751c8ae9e9cd031849fc2
+      - name: Modify Flow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          home=Path('flow/lib/routes/home_page.dart')
+          s=home.read_text()
+          def patch(old,new):
+              global s
+              assert s.count(old)==1, 'Unexpected upstream change: '+old[:80]
+              s=s.replace(old,new,1)
+          patch('import "package:flow/prefs/local_preferences.dart";', 'import "package:flow/features/lad_spaces.dart";\nimport "package:flow/prefs/local_preferences.dart";')
+          patch('  final ScrollController _homeTabScrollController = ScrollController();',
+            '  final ScrollController _homeTabScrollController = ScrollController();\n  final LadSpaces spaces = LadSpaces.instance;\n  void onSpaceChanged() { if(mounted) setState(() {}); }')
+          patch('  void initState() {\n    super.initState();','  void initState() {\n    super.initState();\n    spaces.addListener(onSpaceChanged);\n    unawaited(spaces.load());')
+          patch('  void dispose() {\n    _tabController.dispose();','  void dispose() {\n    spaces.removeListener(onSpaceChanged);\n    _tabController.dispose();')
+          patch('''                Scaffold(
+                  body: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      HomeTab(scrollController: _homeTabScrollController),
+                      const StatsTab(),
+                      const SafeArea(child: AccountsTab()),
+                      const SafeArea(child: ProfileTab()),
+                    ],
+                  ),
+                ),''','''                Scaffold(
+                  body: Column(children:[
+                    SafeArea(bottom:false,child:LadSpacePicker(spaces:spaces)),
+                    Expanded(child:spaces.isPersonal ? TabBarView(
+                      controller:_tabController,
+                      children:[
+                        HomeTab(scrollController:_homeTabScrollController),
+                        const StatsTab(),
+                        const SafeArea(child:AccountsTab()),
+                        const SafeArea(child:ProfileTab()),
+                      ],
+                    ) : LadGroupView(spaces:spaces)),
+                  ]),
+                ),''')
+          patch('                Positioned(\n                  bottom: 16.0,','                if (spaces.isPersonal)\n                  Positioned(\n                    bottom: 16.0,')
+          patch('  void _navigateTo(int index) {\n','  void _navigateTo(int index) {\n    if(!spaces.isPersonal) return;\n')
+          patch('  void _newTransactionPage(FlowButtonType? type) {\n','  void _newTransactionPage(FlowButtonType? type) {\n    if(!spaces.isPersonal) return;\n')
+          home.write_text(s)
+          manifest=Path('flow/android/app/src/main/AndroidManifest.xml')
+          s=manifest.read_text()
+          assert 'android:label="Flow"' in s
+          manifest.write_text(s.replace('android:label="Flow"','android:label="Лад (тест)"').replace('android:scheme="flow-mn"','android:scheme="lad-flow"'))
+          gradle=Path('flow/android/app/build.gradle.kts')
+          s=gradle.read_text()
+          assert 'applicationId = "mn.flow.flow"' in s
+          gradle.write_text(s.replace('applicationId = "mn.flow.flow"','applicationId = "mn.flow.flow.lad"'))
+          PY
+          mkdir -p flow/lib/features
+          cat > flow/lib/features/lad_spaces.dart <<'DART'
+          // Local financial spaces prototype. Based on Flow, GPL-3.0-or-later.
+          import 'dart:convert';
+          import 'package:flutter/material.dart';
+          import 'package:shared_preferences/shared_preferences.dart';
+          class LadSpaces extends ChangeNotifier {
+            LadSpaces._();
+            static final LadSpaces instance=LadSpaces._();
+            List<String> groups=[];
+            String current='';
+            bool loaded=false;
+            bool get isPersonal=>current.isEmpty;
+            Future<void> load() async {
+              if(loaded)return;
+              final p=await SharedPreferences.getInstance();
+              try {
+                groups=(jsonDecode(p.getString('lad.groups')??'[]') as List).map((x)=>x.toString()).toList();
+              } catch(_){groups=[];}
+              current=p.getString('lad.current')??'';
+              if(current.isNotEmpty&&!groups.contains(current))current='';
+              loaded=true;notifyListeners();
+            }
+            Future<void> select(String name) async {
+              await load();
+              if(name.isNotEmpty&&!groups.contains(name))return;
+              current=name;notifyListeners();
+              final p=await SharedPreferences.getInstance();
+              await p.setString('lad.current',name);
+            }
+            Future<void> create(String raw) async {
+              await load();
+              final name=raw.trim();
+              if(name.isEmpty||name.length>50)return;
+              if(!groups.contains(name))groups.add(name);
+              final p=await SharedPreferences.getInstance();
+              await p.setString('lad.groups',jsonEncode(groups));
+              await select(name);
+            }
+          }
+          class LadSpacePicker extends StatelessWidget {
+            final LadSpaces spaces;
+            const LadSpacePicker({super.key,required this.spaces});
+            @override Widget build(BuildContext context)=>ListTile(
+              dense:true,
+              leading:Icon(spaces.isPersonal?Icons.person_outline:Icons.groups_outlined),
+              title:Text(spaces.isPersonal?'Личные финансы':'Группа: '+spaces.current),
+              trailing:const Icon(Icons.keyboard_arrow_down),
+              onTap:()=>showSpaces(context),
+            );
+            Future<void> showSpaces(BuildContext context) async {
+              final value=await showModalBottomSheet<String>(
+                context:context,showDragHandle:true,
+                builder:(c)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
+                  const ListTile(title:Text('Финансовые пространства')),
+                  ListTile(title:const Text('Личные финансы'),leading:const Icon(Icons.person_outline),
+                    onTap:()=>Navigator.pop(c,'')),
+                  ...spaces.groups.map((x)=>ListTile(title:Text(x),leading:const Icon(Icons.groups_outlined),
+                    onTap:()=>Navigator.pop(c,x))),
+                  ListTile(title:const Text('Создать группу'),leading:const Icon(Icons.add_circle_outline),
+                    onTap:()=>Navigator.pop(c,'__create__')),
+                ])));
+              if(value==null||!context.mounted)return;
+              if(value=='__create__'){
+                final field=TextEditingController();
+                final name=await showDialog<String>(context:context,builder:(c)=>AlertDialog(
+                  title:const Text('Новая группа'),content:TextField(controller:field,maxLength:50,
+                    decoration:const InputDecoration(hintText:'Семья')),
+                  actions:[
+                    TextButton(onPressed:()=>Navigator.pop(c),child:const Text('Отмена')),
+                    FilledButton(onPressed:()=>Navigator.pop(c,field.text),child:const Text('Создать'))]));
+                if(name!=null)await spaces.create(name);
+              } else {await spaces.select(value);}
+            }
+          }
+          class LadGroupView extends StatelessWidget {
+            final LadSpaces spaces;
+            const LadGroupView({super.key,required this.spaces});
+            @override Widget build(BuildContext context)=>ListView(padding:const EdgeInsets.all(20),children:[
+              Text(spaces.current,style:Theme.of(context).textTheme.headlineMedium),
+              const SizedBox(height:20),
+              const Card(child:Padding(padding:EdgeInsets.all(20),
+                child:Text('Группа создана локально. Личные счета и операции здесь не показываются. Сервер, приглашения и общие финансы появятся позже.'))),
+              const ListTile(leading:Icon(Icons.people_outline),title:Text('Участники'),subtitle:Text('Пока недоступно')),
+              const ListTile(leading:Icon(Icons.show_chart),title:Text('Семейная аналитика'),subtitle:Text('Пока недоступна')),
+              OutlinedButton(onPressed:()=>spaces.select(''),child:const Text('Вернуться к личным финансам')),
+            ]);
+          }
+          DART
+      - name: Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Build APK
+        working-directory: flow
+        run: |
+          flutter --version
+          flutter pub get
+          flutter build apk --debug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lad-android-debug-apk
+          path: flow/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14
+          if-no-files-found: error
