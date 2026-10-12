@@ -29,30 +29,11 @@ jobs:
             '  final ScrollController _homeTabScrollController = ScrollController();\n  final LadSpaces spaces = LadSpaces.instance;\n  void onSpaceChanged() { if(mounted) setState(() {}); }')
           patch('  void initState() {\n    super.initState();','  void initState() {\n    super.initState();\n    spaces.addListener(onSpaceChanged);\n    unawaited(spaces.load());')
           patch('  void dispose() {\n    _tabController.dispose();','  void dispose() {\n    spaces.removeListener(onSpaceChanged);\n    _tabController.dispose();')
-          patch('''                Scaffold(
-                  body: TabBarView(
-                    controller: _tabController,
-                    children: [
-                      HomeTab(scrollController: _homeTabScrollController),
-                      const StatsTab(),
-                      const SafeArea(child: AccountsTab()),
-                      const SafeArea(child: ProfileTab()),
-                    ],
-                  ),
-                ),''','''                Scaffold(
-                  body: Column(children:[
+          patch('body: TabBarView(', '''body: Column(children:[
                     SafeArea(bottom:false,child:LadSpacePicker(spaces:spaces)),
-                    Expanded(child:spaces.isPersonal ? TabBarView(
-                      controller:_tabController,
-                      children:[
-                        HomeTab(scrollController:_homeTabScrollController),
-                        const StatsTab(),
-                        const SafeArea(child:AccountsTab()),
-                        const SafeArea(child:ProfileTab()),
-                      ],
-                    ) : LadGroupView(spaces:spaces)),
-                  ]),
-                ),''')
+                    Expanded(child:spaces.isPersonal ? TabBarView(''')
+          patch('const SafeArea(child: ProfileTab()),\n                    ],\n                  ),\n                ),',
+                'const SafeArea(child: ProfileTab()),\n                    ],\n                  ) : LadGroupView(spaces:spaces)),\n                ]),\n                ),')
           patch('                Positioned(\n                  bottom: 16.0,','                if (spaces.isPersonal)\n                  Positioned(\n                    bottom: 16.0,')
           patch('  void _navigateTo(int index) {\n','  void _navigateTo(int index) {\n    if(!spaces.isPersonal) return;\n')
           patch('  void _newTransactionPage(FlowButtonType? type) {\n','  void _newTransactionPage(FlowButtonType? type) {\n    if(!spaces.isPersonal) return;\n')
